@@ -1,0 +1,7 @@
+euriai
+dotenv
+PyMuPDF
+streamlit
+streamlit
+youtube-transcript-api==1.0.3
+langchain
