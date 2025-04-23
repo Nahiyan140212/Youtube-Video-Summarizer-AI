@@ -1,210 +1,272 @@
-import os
+import streamlit as st
 import re
-from typing import Dict, Any
-from dotenv import load_dotenv
-from euriai import EuriaiClient
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+from youtube_summary_full import summarize_youtube_video_full
 
-# Load environment variables
-load_dotenv()
-
-# Initialize API keys from environment
-euri_api_key = os.getenv("EURI_API_KEY")
-youtube_api_key = os.getenv("YOUTUBE_API_KEY")
-
-if not euri_api_key:
-    raise EnvironmentError("Missing EURI_API_KEY in environment variables")
-if not youtube_api_key:
-    raise EnvironmentError("Missing YOUTUBE_API_KEY in environment variables")
-
-# Initialize the Euriai client
-client = EuriaiClient(
-    api_key=euri_api_key,
-    model="gpt-4.1-nano"
+# Page configuration
+st.set_page_config(
+    page_title="📘 YouTube Video Summarizer", 
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
-# Initialize YouTube API client
-youtube = build("youtube", "v3", developerKey=youtube_api_key)
+# Custom CSS for styling
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #FF0000;
+        text-align: center;
+    }
+    .subheader {
+        font-size: 1.5rem;
+        color: #333333;
+        margin-top: 1rem;
+        margin-bottom: 2rem;
+    }
+    .summary-section {
+        background-color: #f8f9fa;
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1.5rem;
+        border-left: 5px solid #4285F4;
+    }
+    .timestamp-summary {
+        background-color: #e8f0fe;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+    }
+    .timestamp {
+        font-weight: bold;
+        color: #1a73e8;
+    }
+    .section-title {
+        font-weight: bold;
+        color: #202124;
+        text-decoration: underline;
+    }
+    .title-suggestions {
+        background-color: #fef8e8;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+        border-left: 5px solid #fbbc04;
+    }
+    .tags-section {
+        background-color: #e6f4ea;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+        border-left: 5px solid #34a853;
+    }
+    .thumbnail-section {
+        background-color: #fce8e6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+        border-left: 5px solid #ea4335;
+    }
+    .tag-pill {
+        display: inline-block;
+        background-color: #34a853;
+        color: white;
+        padding: 0.25rem 0.75rem;
+        border-radius: 1rem;
+        margin: 0.25rem;
+        font-size: 0.9rem;
+    }
+    .title-option {
+        padding: 0.5rem;
+        margin: 0.5rem 0;
+        background-color: #fff8e1;
+        border-radius: 0.25rem;
+        border-left: 3px solid #ffab40;
+    }
+    .info-box {
+        background-color: #e8f0fe;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+        border-left: 5px solid #4285F4;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# Maximum transcript length to process
-MAX_TRANSCRIPT_LENGTH = 8000
+# Header
+st.markdown('<p class="main-header">📹 YouTube Video Summarizer</p>', unsafe_allow_html=True)
+st.markdown('<p class="subheader">Get an AI-powered summary of any YouTube video or short</p>', unsafe_allow_html=True)
 
-def extract_video_id(youtube_url: str) -> str:
-    """
-    Extract YouTube video ID from URL, including support for Shorts.
-    
-    Args:
-        youtube_url: A YouTube video URL
-        
-    Returns:
-        The video ID
-        
-    Raises:
-        ValueError: If the URL format is invalid
-    """
+# Input section
+video_link = st.text_input("Paste YouTube Video or Shorts Link Here", placeholder="https://www.youtube.com/watch?v=... or https://www.youtube.com/shorts/...")
+
+# Function to validate YouTube URL and extract video ID
+def extract_video_id(url):
     patterns = [
-        r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})",      # Standard and shortened URLs
-        r"(?:embed/)([a-zA-Z0-9_-]{11})",             # Embed URLs
-        r"(?:watch\?v=)([a-zA-Z0-9_-]{11})",          # Watch URLs
-        r"(?:shorts/)([a-zA-Z0-9_-]{11})"             # Shorts URLs
+        r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})",  # Standard and shortened URLs
+        r"(?:embed/)([a-zA-Z0-9_-]{11})",         # Embed URLs
+        r"(?:watch\?v=)([a-zA-Z0-9_-]{11})",      # Watch URLs
+        r"(?:shorts/)([a-zA-Z0-9_-]{11})"         # Shorts URLs
     ]
     
     for pattern in patterns:
-        match = re.search(pattern, youtube_url)
+        match = re.search(pattern, url)
         if match:
             return match.group(1)
     
-    raise ValueError("❌ Invalid YouTube URL format. Please provide a valid YouTube video URL.")
+    return None
 
-def get_transcript(video_id: str) -> str:
-    """
-    Get and format transcript for a YouTube video using YouTube Data API.
+# Function to parse and format the summary output
+def format_summary(text):
+    sections = {}
+    current_section = None
     
-    Args:
-        video_id: YouTube video ID
-        
-    Returns:
-        Formatted transcript text
-        
-    Raises:
-        ValueError: If transcripts are unavailable or an error occurs
-    """
-    try:
-        # Fetch available captions for the video
-        captions_response = youtube.captions().list(
-            part="snippet",
-            videoId=video_id
-        ).execute()
-
-        captions = captions_response.get("items", [])
-        if not captions:
-            raise ValueError("❌ No captions found for this video. Many YouTube Shorts don't have captions available.")
-
-        # Select the first available caption track (preferably in English)
-        caption_id = None
-        for caption in captions:
-            if caption["snippet"]["language"] == "en" or caption["snippet"]["language"].startswith("en-"):
-                caption_id = caption["id"]
-                break
-        if not caption_id:
-            caption_id = captions[0]["id"]  # Fallback to first available caption
-
-        # Download the caption track
-        caption_resource = youtube.captions().download(
-            id=caption_id,
-            tfmt="srt"  # Use SRT format for timestamps
-        ).execute()
-
-        # Decode the caption content (SRT format)
-        caption_text = caption_resource.decode("utf-8")
-
-        # Parse SRT to create formatted transcript
-        formatted_text = ""
-        srt_lines = caption_text.split("\n\n")
-        for block in srt_lines:
-            lines = block.strip().split("\n")
-            if len(lines) >= 3:  # SRT format: index, timestamp, text
-                timestamp = lines[1].split(" --> ")[0]  # Get start time
-                # Convert SRT timestamp (e.g., 00:00:01,000) to [MM:SS]
-                time_parts = timestamp.split(":")
-                minutes = int(time_parts[1])
-                seconds = int(time_parts[2].split(",")[0])
-                formatted_timestamp = f"[{minutes:02d}:{seconds:02d}] "
-                text = " ".join(lines[2:]).strip()
-                formatted_text += f"{formatted_timestamp}{text}\n"
-
-        return formatted_text
-
-    except HttpError as e:
-        if e.resp.status in [403, 404]:
-            raise ValueError("❌ Captions are disabled or not available for this video.")
-        raise ValueError(f"❌ Error fetching transcript: {str(e)}")
-    except Exception as e:
-        raise ValueError(f"❌ Error fetching transcript: {str(e)}")
-
-def summarize_youtube_video_full(url: str) -> Dict[str, Any]:
-    """
-    Summarize a YouTube video from its URL using YouTube Data API.
+    # Find the timestamp summary section
+    timestamp_match = re.search(r"\*\*1\.\s*Timestamped\s*Summary:\*\*(.*?)(?:\*\*2\.|$)", text, re.DOTALL)
+    if timestamp_match:
+        sections['timestamp_summary'] = timestamp_match.group(1).strip()
     
-    Args:
-        url: YouTube video URL
-        
-    Returns:
-        Dictionary containing the video ID, URL, and summary response
-    """
-    try:
-        # Extract video ID
-        video_id = extract_video_id(url)
-        
-        # Get transcript
-        raw_text = get_transcript(video_id)
-        
-        # Clip transcript if too long
-        if len(raw_text) > MAX_TRANSCRIPT_LENGTH:
-            clipped_text = raw_text[:MAX_TRANSCRIPT_LENGTH]
-            truncation_notice = "\n[Note: Transcript was truncated due to length]"
+    # Find the title suggestions
+    title_match = re.search(r"\*\*2\.\s*5\s*SEO-Friendly\s*YouTube\s*Title\s*Suggestions:\*\*(.*?)(?:\*\*3\.|$)", text, re.DOTALL)
+    if title_match:
+        title_text = title_match.group(1).strip()
+        # Split by newlines or by spaces followed by capital letters
+        titles = re.split(r'\n+|\s+(?=[A-Z][a-z])', title_text)
+        sections['title_suggestions'] = [t.strip() for t in titles if t.strip()]
+    
+    # Find the tags
+    tags_match = re.search(r"\*\*3\.\s*Comma-Separated\s*Video\s*Tags\s*for\s*SEO:\*\*(.*?)(?:\*\*4\.|$)", text, re.DOTALL)
+    if tags_match:
+        tags_text = tags_match.group(1).strip()
+        sections['tags'] = [tag.strip() for tag in tags_text.split(',')]
+    
+    # Find the thumbnail title
+    thumbnail_match = re.search(r"\*\*4\.\s*Short\s*Thumbnail\s*Title:\*\*(.*?)(?:$)", text, re.DOTALL)
+    if thumbnail_match:
+        sections['thumbnail_title'] = thumbnail_match.group(1).strip()
+    
+    # If no structured parsing worked, return the original text
+    if not sections:
+        return {'original_text': text}
+    
+    return sections
+
+# Process the video
+if st.button("Summarize Video"):
+    if not video_link:
+        st.error("Please enter a YouTube URL")
+    else:
+        # Try to extract video ID
+        video_id = extract_video_id(video_link)
+        if not video_id:
+            st.error("Please enter a valid YouTube URL")
         else:
-            clipped_text = raw_text
-            truncation_notice = ""
-        
-        # Prepare prompt for AI
-        summary_prompt = f"""
-You are an AI content expert. Watch this YouTube video transcript and generate the following:
-1. Timestamped and formatted summary of the video (with key sections and timestamps).
-2. 5 SEO-friendly YouTube title suggestions (separated by new lines).
-3. Comma-separated video tags for SEO.
-4. A short thumbnail title for this video.
-5. A short Description or caption for this video
-
-Transcript:{truncation_notice}
-{clipped_text}
-"""
-
-        # Generate completion
-        response = client.generate_completion(
-            prompt=summary_prompt,
-            temperature=0.6,
-            max_tokens=3000
-        )
-        
-        # Handle different response formats
-        generated_text = ""
-        
-        # If response is already just a string
-        if isinstance(response, str):
-            generated_text = response
+            # Show video preview
+            is_shorts = 'shorts' in video_link.lower()
             
-        # If response is a response object from choices format
-        elif isinstance(response, dict):
-            if "choices" in response and len(response["choices"]) > 0:
-                choice = response["choices"][0]
-                if "message" in choice and "content" in choice["message"]:
-                    generated_text = choice["message"]["content"]
-                    
-            # Check for common API response keys
-            elif "text" in response:
-                generated_text = response["text"]
-            elif "content" in response:
-                generated_text = response["content"]
-            elif "completion" in response:
-                generated_text = response["completion"]
-            elif "response" in response:
-                generated_text = response["response"]
-            elif "generated_text" in response:
-                generated_text = response["generated_text"]
+            # Display different preview based on video type
+            if is_shorts:
+                st.markdown(f"""
+                <div class="info-box">
+                    <strong>YouTube Short:</strong> {video_id}
+                    <p>Note: YouTube Shorts often have limited or no transcripts available. Results may vary.</p>
+                </div>
+                """, unsafe_allow_html=True)
+                # Use a custom embedded player size for shorts
+                st.markdown(f"""
+                <iframe width="360" height="640" src="https://www.youtube.com/embed/{video_id}" 
+                frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                allowfullscreen></iframe>
+                """, unsafe_allow_html=True)
+            else:
+                # Regular video
+                st.video(f"https://youtu.be/{video_id}")
+            
+            # Process in stages
+            with st.status("Processing video...", expanded=True) as status:
+                st.write("Extracting video information...")
+                st.write("Downloading transcript...")
+                summary = summarize_youtube_video_full(video_link)
                 
-        # If we couldn't extract text, use the raw response as a fallback
-        if not generated_text:
-            generated_text = str(response)
+                if 'error' in summary:
+                    status.update(label="Error!", state="error")
+                    st.error(summary['error'])
+                else:
+                    status.update(label="Summary complete!", state="complete")
+                    
+                    # Parse and format the summary output
+                    formatted_data = format_summary(summary['response'])
+                    
+                    # Display the results in an organized way
+                    st.markdown("### 📘 Video Summary")
+                    
+                    # Timestamp Summary Section
+                    if 'timestamp_summary' in formatted_data:
+                        st.markdown('<div class="summary-section">', unsafe_allow_html=True)
+                        st.markdown("#### 🕒 Timestamped Summary")
+                        
+                        # Find and format each timestamp entry
+                        timestamp_entries = re.findall(r"\*\s*\*\*(\d+:\d+-\d+:\d+\s+[^:]*?):\*\*\s*(.*?)(?=\*\s*\*\*|\Z)", 
+                                                  formatted_data['timestamp_summary'], re.DOTALL)
+                        
+                        if timestamp_entries:
+                            for timestamp, description in timestamp_entries:
+                                st.markdown(f"""
+                                <div class="timestamp-summary">
+                                    <span class="timestamp">{timestamp}</span>: {description.strip()}
+                                </div>
+                                """, unsafe_allow_html=True)
+                        else:
+                            # If no timestamps found, display the entire summary as text
+                            st.markdown(formatted_data['timestamp_summary'], unsafe_allow_html=True)
+                        
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    # Title Suggestions Section
+                    if 'title_suggestions' in formatted_data:
+                        st.markdown('<div class="title-suggestions">', unsafe_allow_html=True)
+                        st.markdown("#### 📋 SEO-Friendly Title Suggestions")
+                        
+                        for i, title in enumerate(formatted_data['title_suggestions'], 1):
+                            st.markdown(f"""
+                            <div class="title-option">
+                                {i}. {title}
+                            </div>
+                            """, unsafe_allow_html=True)
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    # Tags Section
+                    if 'tags' in formatted_data:
+                        st.markdown('<div class="tags-section">', unsafe_allow_html=True)
+                        st.markdown("#### 🏷️ SEO Tags")
+                        
+                        tags_html = ""
+                        for tag in formatted_data['tags']:
+                            tags_html += f'<span class="tag-pill">{tag}</span>'
+                        
+                        st.markdown(tags_html, unsafe_allow_html=True)
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    # Thumbnail Title Section
+                    if 'thumbnail_title' in formatted_data:
+                        st.markdown('<div class="thumbnail-section">', unsafe_allow_html=True)
+                        st.markdown("#### 🖼️ Thumbnail Title")
+                        st.markdown(f"""
+                        <h2 style="text-align: center; font-weight: bold;">{formatted_data['thumbnail_title']}</h2>
+                        """, unsafe_allow_html=True)
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    # If the parsing failed, show the original text
+                    if 'original_text' in formatted_data:
+                        st.text_area("Summary Output", formatted_data['original_text'], height=400)
+                    
+                    # Add download button for the summary
+                    st.download_button(
+                        label="Download Summary",
+                        data=summary['response'],
+                        file_name=f"summary_{video_id}.txt",
+                        mime="text/plain"
+                    )
 
-        return {
-            "video_id": video_id,
-            "video_url": url,
-            "response": generated_text
-        }
-
-    except ValueError as e:
-        return {"error": str(e), "video_url": url}
-    except Exception as e:
-        return {"error": f"❌ Unexpected error: {str(e)}", "video_url": url}
+# Footer
+st.markdown("---")
+st.markdown("Made with ❤️ using Streamlit and EuriAI")
