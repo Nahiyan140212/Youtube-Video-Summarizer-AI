@@ -5,3 +5,4 @@ streamlit
 streamlit
 youtube-transcript-api==1.0.3
 langchain
+google-api-python-client
