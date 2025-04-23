@@ -11,14 +11,15 @@ from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, No
 load_dotenv()
 
 # Initialize API client with key from environment
-api_key = os.getenv("EURI_API_KEY")
+# Initialize API client with key from Streamlit secrets
+api_key = st.secrets.get("EURI_API_KEY")
 if not api_key:
-    raise EnvironmentError("Missing EURI_API_KEY in environment variables")
+    raise EnvironmentError("Missing EURI_API_KEY in Streamlit secrets")
 
 # Initialize the client
 client = EuriaiClient(
-    api_key=api_key, 
-    model="gpt-4.1-nano"
+    api_key=api_key,
+    model="gpt-4.1-mini"
 )
 
 # Maximum transcript length to process
