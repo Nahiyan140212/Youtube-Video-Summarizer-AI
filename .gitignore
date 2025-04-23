@@ -1,7 +1,7 @@
 # Secrets / local config
 .env
 # Large data artifacts
-.data/upload/
+.data/uploads/
 
 
 
